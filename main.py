@@ -9,7 +9,8 @@ Created and maintained by data_heavy@proton.me
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QMessageBox, QFrame, QSizePolicy, QLineEdit, QCheckBox,
-                             QDialog, QFormLayout, QFileDialog, QDialogButtonBox)
+                             QDialog, QFormLayout, QFileDialog, QDialogButtonBox,
+                             QStackedWidget, QTextEdit)
 from stats import PrinterMonitor
 from vidstream import VideoStreamer
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal
@@ -305,11 +306,20 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(440)
         self.setup_ui()
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Main layout
+        main_layout = QVBoxLayout(self)
+
+        # Stacked widget to switch between settings and about
+        self.stacked_widget = QStackedWidget()
+        main_layout.addWidget(self.stacked_widget)
+
+        # Create settings page
+        settings_page = QWidget()
+        layout = QVBoxLayout(settings_page)
 
         # Common style for input fields with grey outline
         input_style = "QLineEdit { border: 1px solid #666666; padding: 4px; background-color: #3a3a3a; }"
@@ -389,16 +399,67 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form_layout)
 
-        # Buttons
-        button_box = QDialogButtonBox()
+        # Buttons with About button on the left
+        button_layout = QHBoxLayout()
+
+        # About button (left side)
+        about_btn = QPushButton("About")
+        about_btn.clicked.connect(self.show_about)
+        button_layout.addWidget(about_btn)
+
+        # Spacer to push other buttons to the right
+        button_layout.addStretch()
+
+        # Save and Cancel buttons (right side)
         save_btn = QPushButton("Save Settings")
         cancel_btn = QPushButton("Cancel")
-        button_box.addButton(save_btn, QDialogButtonBox.AcceptRole)
-        button_box.addButton(cancel_btn, QDialogButtonBox.RejectRole)
-        button_box.accepted.connect(self.save_settings)
-        button_box.rejected.connect(self.reject)
+        save_btn.clicked.connect(self.save_settings)
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(save_btn)
 
-        layout.addWidget(button_box)
+        layout.addLayout(button_layout)
+
+        # Add settings page to stacked widget
+        self.stacked_widget.addWidget(settings_page)
+
+        # Create about page
+        about_page = QWidget()
+        about_layout = QVBoxLayout(about_page)
+
+        # About text (selectable and centered)
+        about_text = QTextEdit()
+        about_text.setReadOnly(True)
+        about_text.setHtml("""<center style="font-family: 'Menlo', 'Monaco', 'Courier New', monospace;">
+==================================================<br>
+==================================================<br>
+Streamy v1.5<br>
+A standalone RTSP Video Streamer<br>
+Created and maintained by data_heavy@proton.me<br>
+https://github.com/OverjoyedFrankenstein/Streamy<br>
+==================================================<br>
+==================================================
+</center>""")
+        about_text.setStyleSheet("QTextEdit { background-color: #2a2a2a; border: none; }")
+        about_layout.addWidget(about_text)
+
+        # Close button for about page
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.show_settings)
+        about_layout.addWidget(close_btn)
+
+        # Add about page to stacked widget
+        self.stacked_widget.addWidget(about_page)
+
+    def show_about(self):
+        """Switch to about page"""
+        self.stacked_widget.setCurrentIndex(1)
+        self.setWindowTitle("About Streamy")
+
+    def show_settings(self):
+        """Switch back to settings page"""
+        self.stacked_widget.setCurrentIndex(0)
+        self.setWindowTitle("Settings")
 
     def browse_screenshot_path(self):
         """Open folder browser for screenshot path"""

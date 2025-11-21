@@ -1,1 +1,14 @@
-{"recent_printers": ["192.168.186.238"], "last_used_printer": "192.168.186.238", "include_timestamp": true, "video_enabled": true, "auto_connect": true, "transport": "udp", "rtsp_path": "/video"}
+{
+  "recent_printers": [],
+  "last_used_printer": "",
+  "include_timestamp": true,
+  "video_enabled": true,
+  "auto_connect": false,
+  "transport": "udp",
+  "rtsp_path": "/video",
+  "rtsp_port": 554,
+  "printer_display_name": "",
+  "screenshot_path": "",
+  "show_big_progress": true,
+  "show_fps": true
+}
