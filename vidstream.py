@@ -28,6 +28,7 @@ class VideoStreamer:
         # RTSP settings
         self.transport = "udp"  # "udp" or "tcp"
         self.path = "/video"    # RTSP path (default: /video)
+        self.port = 554         # RTSP port (default: 554)
 
         # Suppress OpenCV error messages
         self._suppress_opencv_errors()
@@ -42,6 +43,10 @@ class VideoStreamer:
         if not path.startswith("/"):
             path = "/" + path
         self.path = path
+
+    def set_port(self, port):
+        """Set the RTSP port"""
+        self.port = int(port)
     
     def _suppress_opencv_errors(self):
         """Suppress OpenCV error messages in a way compatible with all versions"""
@@ -52,12 +57,8 @@ class VideoStreamer:
             # Suppress Python warnings
             warnings.filterwarnings("ignore", category=UserWarning)
             warnings.filterwarnings("ignore", category=DeprecationWarning)
-            
-            # Disable standard error output (works on all platforms)
-            if hasattr(os, 'devnull'):
-                os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
-            
-            logger.info("OpenCV error messages suppressed")
+
+            pass
         except Exception as e:
             logger.error(f"Failed to suppress OpenCV errors: {e}")
     
@@ -70,9 +71,9 @@ class VideoStreamer:
         if not self.ip_address:
             logger.error("Cannot connect: No IP address provided")
             return False
-        
+
         # Construct the RTSP URL
-        rtsp_url = f"rtsp://{self.ip_address}:554{self.path}"
+        rtsp_url = f"rtsp://{self.ip_address}:{self.port}{self.path}"
         logger.info(f"Connecting to RTSP stream at: {rtsp_url} (transport: {self.transport})")
 
         try:
@@ -85,19 +86,36 @@ class VideoStreamer:
             else:
                 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
 
+            # Suppress FFMPEG output during connection
+            import sys
+            import contextlib
+
+            @contextlib.contextmanager
+            def suppress_stderr():
+                """Context manager to suppress stderr temporarily"""
+                stderr_fd = sys.stderr.fileno()
+                with os.fdopen(os.dup(stderr_fd), 'wb') as old_stderr:
+                    with open(os.devnull, 'wb') as devnull:
+                        os.dup2(devnull.fileno(), stderr_fd)
+                        try:
+                            yield
+                        finally:
+                            os.dup2(old_stderr.fileno(), stderr_fd)
+
             # Try to use FFMPEG backend if available
-            try:
-                self.cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-            except:
-                # Fallback for older OpenCV versions
-                self.cap = cv2.VideoCapture(rtsp_url)
+            with suppress_stderr():
+                try:
+                    self.cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                except Exception as e:
+                    # Fallback for older OpenCV versions
+                    self.cap = cv2.VideoCapture(rtsp_url)
 
             # Set additional capture properties for more stable streaming
             try:
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)  # Increase buffer size
             except:
                 pass  # Ignore if this property isn't supported
-            
+
             # Check if connected successfully
             if not self.cap.isOpened():
                 logger.error(f"Failed to connect to RTSP stream at {rtsp_url}")
@@ -210,41 +228,45 @@ class VideoStreamer:
         except Exception as e:
             logger.error(f"Error adding timestamp to frame: {e}")
     
-    def take_snapshot(self, add_timestamp=True):
-        """Take a snapshot of the current frame and save it to the desktop
-        
+    def take_snapshot(self, add_timestamp=True, save_path=None):
+        """Take a snapshot of the current frame and save it
+
         Args:
             add_timestamp (bool): Whether to add a timestamp to the snapshot
-            
+            save_path (str): Directory to save the snapshot (defaults to Desktop)
+
         Returns:
             tuple: (success, filepath) where success is a bool and filepath is the path to the saved file
         """
         if not self.is_running:
             logger.error("Cannot take snapshot: Stream is not running")
             return False, None
-        
+
         try:
             # Get current frame
             success, frame = self.get_frame(add_timestamp=False)
-            
+
             if not success or frame is None:
                 logger.error("Failed to get frame for snapshot")
                 return False, None
-            
+
             # Add timestamp if requested
             if add_timestamp:
                 self.add_timestamp_to_frame(frame)
-            
+
             # Create filename with date and time
             now = datetime.now()
             filename = f"printer_snapshot_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
-            
-            # Save to desktop
-            desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
-            filepath = os.path.join(desktop_path, filename)
+
+            # Use provided path or default to desktop
+            if save_path:
+                save_dir = save_path
+            else:
+                save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+            filepath = os.path.join(save_dir, filename)
             
             # Ensure the directory exists
-            os.makedirs(desktop_path, exist_ok=True)
+            os.makedirs(save_dir, exist_ok=True)
             
             # Save the image
             cv2.imwrite(filepath, frame)

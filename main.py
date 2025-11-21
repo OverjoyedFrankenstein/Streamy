@@ -8,11 +8,12 @@ Created and maintained by data_heavy@proton.me
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QComboBox, QPushButton,
-                             QMessageBox, QFrame, QSizePolicy, QLineEdit, QCheckBox)
-from printmon import PrinterMonitor
+                             QMessageBox, QFrame, QSizePolicy, QLineEdit, QCheckBox,
+                             QDialog, QFormLayout, QFileDialog, QDialogButtonBox)
+from stats import PrinterMonitor
 from vidstream import VideoStreamer
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap, QColor, QPainter
+from PyQt5.QtGui import QImage, QPixmap, QColor, QPainter, QIcon, QFontMetrics
 import cv2  # Add this import here
 import numpy as np
 import sys
@@ -88,7 +89,7 @@ APP_VERSION = "1.5"
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("streamy")
@@ -148,7 +149,12 @@ class Config:
             "video_enabled": True,  # Add default for video toggle
             "auto_connect": True,   # Add default for auto-connect setting
             "transport": "udp",     # RTSP transport: "udp" or "tcp"
-            "rtsp_path": "/video"   # RTSP path
+            "rtsp_path": "/video",  # RTSP path
+            "rtsp_port": 554,       # RTSP port
+            "screenshot_path": os.path.expanduser("~/Desktop"),  # Screenshot save path
+            "show_big_progress": True,  # Show large progress percentage
+            "show_fps": True,  # Show FPS counter
+            "printer_display_name": ""  # Custom printer display name
         }
 
         if os.path.exists(CONFIG_FILE):
@@ -246,6 +252,190 @@ class Config:
         """Get the RTSP path"""
         return self.config.get("rtsp_path", "/video")
 
+    def set_rtsp_port(self, value):
+        """Set the RTSP port"""
+        self.config["rtsp_port"] = value
+        self.save_config()
+
+    def get_rtsp_port(self):
+        """Get the RTSP port"""
+        return self.config.get("rtsp_port", 554)
+
+    def set_screenshot_path(self, value):
+        """Set the screenshot save path"""
+        self.config["screenshot_path"] = value
+        self.save_config()
+
+    def get_screenshot_path(self):
+        """Get the screenshot save path"""
+        return self.config.get("screenshot_path", os.path.expanduser("~/Desktop"))
+
+    def set_show_big_progress(self, value):
+        """Set whether to show the big progress percentage"""
+        self.config["show_big_progress"] = value
+        self.save_config()
+
+    def get_show_big_progress(self):
+        """Get whether to show the big progress percentage"""
+        return self.config.get("show_big_progress", True)
+
+    def set_show_fps(self, value):
+        """Set whether to show the FPS counter"""
+        self.config["show_fps"] = value
+        self.save_config()
+
+    def get_show_fps(self):
+        """Get whether to show the FPS counter"""
+        return self.config.get("show_fps", True)
+
+    def set_printer_display_name(self, value):
+        """Set the printer display name"""
+        self.config["printer_display_name"] = value
+        self.save_config()
+
+    def get_printer_display_name(self):
+        """Get the printer display name"""
+        return self.config.get("printer_display_name", "")
+
+
+class SettingsDialog(QDialog):
+    """Settings dialog for Streamy configuration"""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(400)
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Common style for input fields with grey outline
+        input_style = "QLineEdit { border: 1px solid #666666; padding: 4px; background-color: #3a3a3a; }"
+        checkbox_style = "QCheckBox { padding: 4px; }"
+
+        # Form layout for settings
+        form_layout = QFormLayout()
+
+        # IP Address
+        self.ip_input = QLineEdit()
+        self.ip_input.setText(self.config.get_last_used_printer())
+        self.ip_input.setStyleSheet(input_style)
+        form_layout.addRow("IP Address:", self.ip_input)
+
+        # Port
+        self.port_input = QLineEdit()
+        self.port_input.setText(str(self.config.get_rtsp_port()))
+        self.port_input.setStyleSheet(input_style)
+        form_layout.addRow("Port:", self.port_input)
+
+        # Path
+        self.path_input = QLineEdit()
+        self.path_input.setText(self.config.get_rtsp_path())
+        self.path_input.setStyleSheet(input_style)
+        form_layout.addRow("RTSP Path:", self.path_input)
+
+        # Transport
+        self.transport_combo = QComboBox()
+        self.transport_combo.addItems(["UDP", "TCP"])
+        self.transport_combo.setCurrentText(self.config.get_transport().upper())
+        self.transport_combo.setStyleSheet("QComboBox { background-color: #3a3a3a; border: 1px solid #666666; padding: 4px; } QComboBox QAbstractItemView { background-color: #3a3a3a; }")
+        form_layout.addRow("Transport:", self.transport_combo)
+
+        # Printer Display Name
+        self.display_name_input = QLineEdit()
+        self.display_name_input.setText(self.config.get_printer_display_name())
+        self.display_name_input.setPlaceholderText("Optional custom name")
+        self.display_name_input.setStyleSheet(input_style)
+        form_layout.addRow("Printer Name:", self.display_name_input)
+
+        # Show big progress checkbox (moved below Printer Name)
+        self.show_big_progress_checkbox = QCheckBox("Show large progress percentage")
+        self.show_big_progress_checkbox.setChecked(self.config.get_show_big_progress())
+        self.show_big_progress_checkbox.setStyleSheet(checkbox_style)
+        form_layout.addRow("", self.show_big_progress_checkbox)
+
+        # Show FPS checkbox
+        self.show_fps_checkbox = QCheckBox("Show FPS counter")
+        self.show_fps_checkbox.setChecked(self.config.get_show_fps())
+        self.show_fps_checkbox.setStyleSheet(checkbox_style)
+        form_layout.addRow("", self.show_fps_checkbox)
+
+        # Screenshot path
+        screenshot_widget = QWidget()
+        screenshot_layout = QHBoxLayout(screenshot_widget)
+        screenshot_layout.setContentsMargins(0, 0, 0, 0)
+        self.screenshot_path_input = QLineEdit()
+        self.screenshot_path_input.setText(self.config.get_screenshot_path())
+        self.screenshot_path_input.setStyleSheet(input_style)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse_screenshot_path)
+        screenshot_layout.addWidget(self.screenshot_path_input)
+        screenshot_layout.addWidget(browse_btn)
+        form_layout.addRow("Screenshot Path:", screenshot_widget)
+
+        # Timestamp checkbox
+        self.timestamp_checkbox = QCheckBox("Include timestamp on screenshots")
+        self.timestamp_checkbox.setChecked(self.config.get_include_timestamp())
+        self.timestamp_checkbox.setStyleSheet(checkbox_style)
+        form_layout.addRow("", self.timestamp_checkbox)
+
+        # Auto-connect checkbox
+        self.auto_connect_checkbox = QCheckBox("Auto-connect on startup")
+        self.auto_connect_checkbox.setChecked(self.config.get_auto_connect())
+        self.auto_connect_checkbox.setStyleSheet(checkbox_style)
+        form_layout.addRow("", self.auto_connect_checkbox)
+
+        layout.addLayout(form_layout)
+
+        # Buttons
+        button_box = QDialogButtonBox()
+        save_btn = QPushButton("Save Settings")
+        cancel_btn = QPushButton("Cancel")
+        button_box.addButton(save_btn, QDialogButtonBox.AcceptRole)
+        button_box.addButton(cancel_btn, QDialogButtonBox.RejectRole)
+        button_box.accepted.connect(self.save_settings)
+        button_box.rejected.connect(self.reject)
+
+        layout.addWidget(button_box)
+
+    def browse_screenshot_path(self):
+        """Open folder browser for screenshot path"""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Screenshot Folder",
+            self.screenshot_path_input.text()
+        )
+        if folder:
+            self.screenshot_path_input.setText(folder)
+
+    def save_settings(self):
+        """Save all settings and close dialog"""
+        # Validate port
+        try:
+            port = int(self.port_input.text())
+            if port < 1 or port > 65535:
+                port = 554
+        except ValueError:
+            port = 554
+
+        # Save all settings
+        self.config.set_rtsp_port(port)
+        self.config.set_rtsp_path(self.path_input.text() or "/video")
+        self.config.set_transport(self.transport_combo.currentText().lower())
+        self.config.set_printer_display_name(self.display_name_input.text())
+        self.config.set_screenshot_path(self.screenshot_path_input.text())
+        self.config.set_include_timestamp(self.timestamp_checkbox.isChecked())
+        self.config.set_show_big_progress(self.show_big_progress_checkbox.isChecked())
+        self.config.set_show_fps(self.show_fps_checkbox.isChecked())
+        self.config.set_auto_connect(self.auto_connect_checkbox.isChecked())
+
+        # Update last used printer if IP changed
+        if self.ip_input.text().strip():
+            self.config.add_printer(self.ip_input.text().strip())
+
+        self.accept()
+
 
 class StreamyApp(QMainWindow):
     """Main application integrating video stream and printer monitor"""
@@ -258,6 +448,12 @@ class StreamyApp(QMainWindow):
 
         # Set window properties
         self.setWindowTitle(f"Streamy v{APP_VERSION}")
+
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
         self.resize(1000, 700)
         self.setMinimumSize(800, 600)
 
@@ -267,6 +463,8 @@ class StreamyApp(QMainWindow):
         # Status variables
         # Store previous status for status timer
         self.previous_status = "Not connected"
+        # Store current connected IP address
+        self.current_ip = None
 
         # FPS calculation variables
         self.frame_count = 0
@@ -309,6 +507,9 @@ class StreamyApp(QMainWindow):
         # Populate recent printers
         self.populate_printer_combobox()
 
+        # Update IP label to show printer name if set
+        self.update_ip_label()
+
         # Handle auto-connection with precedence to command-line IP if provided
         if ip_address:
             # Command-line IP has highest priority
@@ -329,83 +530,65 @@ class StreamyApp(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
 
-        # Controls frame
+        # Controls frame with three sections: left (IP/name), center (buttons), right (status)
         controls_frame = QWidget()
         controls_layout = QHBoxLayout(controls_frame)
         controls_layout.setContentsMargins(5, 5, 5, 5)
 
-        # IP Address label and combobox
-        ip_label = QLabel("Printer IP Address:")
+        # Left section - IP/Printer name
+        left_section = QWidget()
+        left_layout = QHBoxLayout(left_section)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Use QLineEdit instead of just ComboBox to handle Enter key press
+        self.ip_label = QLabel("IP Address:")
+        left_layout.addWidget(self.ip_label)
+        left_layout.addStretch(1)
+
+        # Hidden IP combo (kept for settings dialog compatibility)
         self.ip_line_edit = QLineEdit()
         self.ip_line_edit.returnPressed.connect(self.connect_to_printer)
-
         self.ip_combo = QComboBox()
         self.ip_combo.setEditable(True)
         self.ip_combo.setMinimumWidth(200)
-        # Use our custom line edit with Enter key support
         self.ip_combo.setLineEdit(self.ip_line_edit)
-        # Lighter background for better visibility
         self.ip_combo.setStyleSheet("QComboBox { background-color: #3a3a3a; } QComboBox QAbstractItemView { background-color: #3a3a3a; }")
+        self.ip_combo.setVisible(False)  # Hidden by default
+        left_layout.addWidget(self.ip_combo)
 
-        # Transport protocol dropdown (UDP/TCP)
-        transport_label = QLabel("Transport:")
-        self.transport_combo = QComboBox()
-        self.transport_combo.addItems(["UDP", "TCP"])
-        self.transport_combo.setCurrentText(self.config.get_transport().upper())
-        self.transport_combo.currentTextChanged.connect(self.transport_changed)
-        # Lighter background for better visibility
-        self.transport_combo.setStyleSheet("QComboBox { background-color: #3a3a3a; } QComboBox QAbstractItemView { background-color: #3a3a3a; }")
+        # Center section - Buttons (fixed, no stretch)
+        center_section = QWidget()
+        center_layout = QHBoxLayout(center_section)
+        center_layout.setContentsMargins(0, 0, 0, 0)
 
-        # RTSP Path input
-        path_label = QLabel("Path:")
-        self.path_input = QLineEdit()
-        self.path_input.setText(self.config.get_rtsp_path())
-        self.path_input.setMaximumWidth(100)
-        self.path_input.editingFinished.connect(self.path_changed)
-
-        # Connect/Disconnect buttons
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.connect_to_printer)
+        center_layout.addWidget(self.connect_btn)
 
         self.disconnect_btn = QPushButton("Disconnect")
         self.disconnect_btn.clicked.connect(self.disconnect_printer)
+        center_layout.addWidget(self.disconnect_btn)
 
-        # Video Toggle Button (replaces "Streamy v1.2" label at top)
         self.video_toggle_btn = QPushButton("Disable Video")
         self.video_toggle_btn.clicked.connect(self.toggle_video)
-        # Initially disabled until connected
         self.video_toggle_btn.setEnabled(False)
+        center_layout.addWidget(self.video_toggle_btn)
 
-        # Status indicator and label in a horizontal layout
-        status_widget = QWidget()
-        status_layout = QHBoxLayout(status_widget)
-        status_layout.setContentsMargins(0, 0, 0, 0)
+        # Right section - Status
+        right_section = QWidget()
+        right_layout = QHBoxLayout(right_section)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create status indicator dot
+        right_layout.addStretch(1)
         self.status_indicator = StatusIndicator(size=16)
-        status_layout.addWidget(self.status_indicator)
+        right_layout.addWidget(self.status_indicator)
 
-        # Create status label
         self.status_label = QLabel("Not connected")
-        status_layout.addWidget(self.status_label)
+        right_layout.addWidget(self.status_label)
 
-        # Add stretch to push everything to the left
-        status_layout.addStretch(1)
-
-        # Add controls to layout
-        controls_layout.addWidget(ip_label)
-        controls_layout.addWidget(self.ip_combo)
-        controls_layout.addWidget(transport_label)
-        controls_layout.addWidget(self.transport_combo)
-        controls_layout.addWidget(path_label)
-        controls_layout.addWidget(self.path_input)
-        controls_layout.addWidget(self.connect_btn)
-        controls_layout.addWidget(self.disconnect_btn)
-        controls_layout.addWidget(self.video_toggle_btn)
-        controls_layout.addStretch(1)
-        controls_layout.addWidget(status_widget)
+        # Add all three sections to main controls layout with equal stretch
+        controls_layout.addWidget(left_section, 1)
+        controls_layout.addWidget(center_section, 0)  # No stretch - keeps buttons centered
+        controls_layout.addWidget(right_section, 1)
 
         # Video display
         self.video_frame = QLabel()
@@ -443,58 +626,75 @@ class StreamyApp(QMainWindow):
         left_layout.addWidget(self.total_time_label)
         left_layout.addWidget(self.remain_time_label)
 
+        # Center - Large percentage display
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.big_progress_label = QLabel("--%")
+        self.big_progress_label.setAlignment(Qt.AlignLeft)
+        self.big_progress_label.setStyleSheet("color: #a6a6a6; font-size: 72pt; font-weight: bold;")
+        self.big_progress_label.setVisible(self.config.get_show_big_progress())
+
+        center_layout.addStretch(1)
+        center_layout.addWidget(self.big_progress_label)
+        center_layout.addStretch(1)
+
         # Right side - Controls and Status
         right_controls = QWidget()
         right_layout = QVBoxLayout(right_controls)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(3)  # Minimal spacing for compact layout
 
-        # Status and last updated labels
+        # Status and last updated labels - same width as snapshot button for alignment
         self.print_status_label = QLabel("Status: Not Connected")
         self.print_status_label.setAlignment(Qt.AlignLeft)
+        self.print_status_label.setFixedWidth(213)  # Match snapshot button width
         self.last_updated_label = QLabel("Last Updated: --")
         self.last_updated_label.setAlignment(Qt.AlignLeft)
+        self.last_updated_label.setFixedWidth(213)  # Match snapshot button width
 
-        # Create snapshot button - full width
+        # Create snapshot button
         self.snapshot_btn = QPushButton("Snapshot")
         self.snapshot_btn.clicked.connect(self.take_snapshot)
+        self.snapshot_btn.setFixedWidth(213)  # Adjust this value as needed
         # Disabled initially until connected
         self.snapshot_btn.setEnabled(False)
 
-        # Timestamp checkbox
-        self.timestamp_checkbox = QCheckBox("Timestamp")
-        self.timestamp_checkbox.setChecked(self.config.get_include_timestamp())
-        self.timestamp_checkbox.stateChanged.connect(
-            self.timestamp_checkbox_changed)
-
-        # Bottom info widget (Streamy version and FPS)
+        # Bottom info widget (Settings and FPS) - same width as snapshot button for alignment
         bottom_info_widget = QWidget()
+        bottom_info_widget.setFixedWidth(213)  # Match snapshot button width
         bottom_info_layout = QHBoxLayout(bottom_info_widget)
         bottom_info_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_info_layout.setAlignment(Qt.AlignVCenter)
 
-        # App version and FPS counter
-        version_label = QLabel(f"Streamy v{APP_VERSION}")
-        version_label.setStyleSheet("color: gray;")
+        # Combined Settings button with text and gear icon
+        self.settings_btn = QPushButton("Settings ⚙")
+        self.settings_btn.setStyleSheet("QPushButton { border: none; color: gray; padding: 0; margin: 0; } QPushButton:hover { color: white; }")
+        self.settings_btn.clicked.connect(self.open_settings)
 
-        self.fps_label = QLabel("0 FPS")
-        self.fps_label.setAlignment(Qt.AlignRight)
+        self.fps_label = QLabel("00.0 FPS")
+        self.fps_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.fps_label.setStyleSheet("color: gray;")
+        self.fps_label.setVisible(self.config.get_show_fps())
+        # Set fixed width based on widest possible FPS (88.8 FPS)
+        fps_metrics = QFontMetrics(self.fps_label.font())
+        self.fps_label.setFixedWidth(fps_metrics.horizontalAdvance("88.8 FPS"))
 
         # Add widgets to bottom info layout
-        bottom_info_layout.addWidget(version_label)
-        bottom_info_layout.addStretch(1)
         bottom_info_layout.addWidget(self.fps_label)
+        bottom_info_layout.addStretch(1)
+        bottom_info_layout.addWidget(self.settings_btn)
 
         # Add elements to right layout in correct order
-        right_layout.addWidget(self.print_status_label)
-        right_layout.addWidget(self.last_updated_label)
-        right_layout.addWidget(self.snapshot_btn)
-        right_layout.addWidget(self.timestamp_checkbox)
-        right_layout.addWidget(bottom_info_widget)
+        right_layout.addWidget(self.print_status_label, 0, Qt.AlignRight)
+        right_layout.addWidget(self.last_updated_label, 0, Qt.AlignRight)
+        right_layout.addWidget(self.snapshot_btn, 0, Qt.AlignRight)
+        right_layout.addWidget(bottom_info_widget, 0, Qt.AlignRight)
 
-        # Add left and right sides to bottom layout
+        # Add left, center, and right sides to bottom layout
         bottom_layout.addWidget(left_status, 1)
-        bottom_layout.addStretch(1)
+        bottom_layout.addWidget(center_widget, 1)
         bottom_layout.addWidget(right_controls)
 
         # Add all main widgets to main layout
@@ -552,6 +752,7 @@ class StreamyApp(QMainWindow):
     def clear_printer_status_ui(self):
         """Reset printer status UI elements to default values"""
         self.progress_label.setText("Progress: --")
+        self.big_progress_label.setText("--%")
         self.remain_layers_label.setText("Remaining Layers: --")
         self.current_layer_label.setText("Current Layer: --")
         self.total_time_label.setText("Total Print Time: --")
@@ -597,6 +798,7 @@ class StreamyApp(QMainWindow):
                 progress = 0.0
             progress = max(0, min(100, progress))
             self.progress_label.setText(f"Progress: {progress:.1f}%")
+            self.big_progress_label.setText(f"{progress:.1f}%")
 
             # Update layer information
             if print_info.total_layer > 0:
@@ -639,6 +841,7 @@ class StreamyApp(QMainWindow):
         else:
             # No active print, clear progress fields
             self.progress_label.setText("Progress: --")
+            self.big_progress_label.setText("--%")
             self.current_layer_label.setText("Current Layer: --")
             self.remain_layers_label.setText("Remaining Layers: --")
             self.total_time_label.setText("Total Print Time: --")
@@ -672,16 +875,9 @@ class StreamyApp(QMainWindow):
         # Connect to the printer
         return await self.printer_monitor.connect()
 
-    def timestamp_checkbox_changed(self, state):
-        """Handle timestamp checkbox state change"""
-        include_timestamp = (state == Qt.Checked)
-        self.config.set_include_timestamp(include_timestamp)
-        print(f"Timestamp setting changed to: {include_timestamp}")
-
     def transport_changed(self, text):
         """Handle transport protocol change"""
         self.config.set_transport(text.lower())
-        print(f"Transport changed to: {text}")
 
     def path_changed(self):
         """Handle RTSP path change"""
@@ -690,7 +886,62 @@ class StreamyApp(QMainWindow):
             path = "/video"
             self.path_input.setText(path)
         self.config.set_rtsp_path(path)
-        print(f"RTSP path changed to: {path}")
+
+    def port_changed(self):
+        """Handle RTSP port change"""
+        port_text = self.port_input.text().strip()
+        try:
+            port = int(port_text) if port_text else 554
+            if port < 1 or port > 65535:
+                port = 554
+        except ValueError:
+            port = 554
+        self.port_input.setText(str(port))
+        self.config.set_rtsp_port(port)
+
+    def open_settings(self):
+        """Open the settings dialog"""
+        dialog = SettingsDialog(self.config, self)
+        if dialog.exec_() == QDialog.Accepted:
+            # Apply settings changes to UI
+            self.apply_settings()
+
+    def update_ip_label(self):
+        """Update the IP label to show printer name if set, otherwise show IP address"""
+        printer_name = self.config.get_printer_display_name()
+        last_printer = self.config.get_last_used_printer()
+
+        if printer_name:
+            # Show custom printer name - bold and larger font
+            self.ip_label.setText(printer_name)
+            self.ip_label.setStyleSheet("font-weight: bold; font-size: 14pt;")
+        elif last_printer:
+            # No custom name - show IP address instead
+            self.ip_label.setText(last_printer)
+            self.ip_label.setStyleSheet("font-weight: bold; font-size: 14pt;")
+        else:
+            # No printer at all - show placeholder
+            self.ip_label.setText("No Printer")
+            self.ip_label.setStyleSheet("font-weight: bold; font-size: 14pt; color: gray;")
+
+        # Always show label and hide combo
+        self.ip_label.setVisible(True)
+        self.ip_combo.setVisible(False)
+
+    def apply_settings(self):
+        """Apply settings changes to the UI"""
+        # Update IP combo
+        self.populate_printer_combobox()
+        last_printer = self.config.get_last_used_printer()
+        if last_printer:
+            self.ip_combo.setCurrentText(last_printer)
+
+        # Update IP label to show printer name if set
+        self.update_ip_label()
+
+        # Show/hide big progress label and FPS
+        self.big_progress_label.setVisible(self.config.get_show_big_progress())
+        self.fps_label.setVisible(self.config.get_show_fps())
 
     def show_no_connection_message(self):
         """Show a message when no camera is connected"""
@@ -709,14 +960,12 @@ class StreamyApp(QMainWindow):
         # Only reset if not already reset and previous status exists
         if self.previous_status:
             self.status_label.setText(self.previous_status)
-            print(f"Status reset to: {self.previous_status}")
+            self.previous_status = None  # Clear to avoid repeated resets
 
     def show_temporary_status(self, message, duration_ms=5000):
         """Show a temporary status message, then revert to previous status"""
         # Save current status before changing it
         self.previous_status = self.status_label.text()
-        print(
-            f"Setting temporary status: {message} (Previous: {self.previous_status})")
 
         # Update status label with new message
         self.status_label.setText(message)
@@ -730,7 +979,11 @@ class StreamyApp(QMainWindow):
 
     def connect_to_printer(self):
         """Connect to the printer video stream and status monitor"""
-        ip_address = self.ip_combo.currentText().strip()
+        # Get IP from combo if visible, otherwise from config
+        if self.ip_combo.isVisible():
+            ip_address = self.ip_combo.currentText().strip()
+        else:
+            ip_address = self.config.get_last_used_printer()
 
         if not ip_address:
             QMessageBox.critical(
@@ -748,14 +1001,17 @@ class StreamyApp(QMainWindow):
 
         # Set the IP address and RTSP settings for the video streamer
         self.video_streamer.set_ip_address(ip_address)
-        self.video_streamer.set_transport(self.config.get_transport())
+        self.video_streamer.set_port(self.config.get_rtsp_port())
         self.video_streamer.set_path(self.config.get_rtsp_path())
+        self.video_streamer.set_transport(self.config.get_transport())
 
         # Try to connect to the camera
         if self.video_streamer.connect():
             # Successfully connected to video stream
             self.status_indicator.setColor(StatusIndicator.GREEN)
-            self.status_label.setText("Connected")
+            # Store current IP and show in status
+            self.current_ip = ip_address
+            self.status_label.setText(f"Connected: {ip_address}")
 
             # Save to config
             self.config.add_printer(ip_address)
@@ -789,13 +1045,8 @@ class StreamyApp(QMainWindow):
                 loop.close()
 
                 if connected:
-                    print(
-                        f"Successfully connected to printer monitor at {ip_address}")
                     # Get initial status
                     self.fetch_printer_status()
-                else:
-                    print(
-                        f"Could not connect to printer monitor, but video streaming works")
 
             # Start the printer monitor connection in a separate thread
             threading.Thread(
@@ -805,13 +1056,17 @@ class StreamyApp(QMainWindow):
             # Failed to connect to camera
             self.status_indicator.setColor(StatusIndicator.RED)
             self.status_label.setText("Not connected")
+            rtsp_url = f"rtsp://{ip_address}:{self.config.get_rtsp_port()}{self.config.get_rtsp_path()}"
             QMessageBox.critical(self, "Connection Error",
-                                 f"Could not connect to the camera at {ip_address}.\n\n"
+                                 f"Could not connect to the camera at {rtsp_url}.\n\n"
                                  f"Please check that the printer is powered on, connected to the network, "
                                  f"and has the camera enabled.")
 
     def disconnect_printer(self):
         """Disconnect from the printer video stream and status monitor"""
+        # Clear current IP
+        self.current_ip = None
+
         # Disconnect from video stream
         if self.video_streamer.is_running:
             # Stop timers
@@ -830,7 +1085,7 @@ class StreamyApp(QMainWindow):
             self.video_toggle_btn.setEnabled(False)
 
             # Reset FPS counter
-            self.fps_label.setText("0 FPS")
+            self.fps_label.setText("00.0 FPS")
 
             # Show no connection message
             self.show_no_connection_message()
@@ -853,15 +1108,15 @@ class StreamyApp(QMainWindow):
                                 "No video stream is active")
             return
 
-        # Take snapshot with timestamp if enabled
+        # Take snapshot with timestamp if enabled in settings
         success, filepath = self.video_streamer.take_snapshot(
-            add_timestamp=self.timestamp_checkbox.isChecked()
+            add_timestamp=self.config.get_include_timestamp(),
+            save_path=self.config.get_screenshot_path()
         )
 
         if success:
             # Show temporary success message
-            filename = os.path.basename(filepath)
-            self.show_temporary_status(f"Snapshot saved: {filename}", 5000)
+            self.show_temporary_status("Snapshot!", 5000)
         else:
             QMessageBox.critical(self, "Snapshot Error",
                                  "Failed to save snapshot")
@@ -883,7 +1138,10 @@ class StreamyApp(QMainWindow):
             # Frame received successfully - ensure status is green
             if self.status_indicator.color != StatusIndicator.GREEN:
                 self.status_indicator.setColor(StatusIndicator.GREEN)
-                self.status_label.setText("Connected")
+                if self.current_ip:
+                    self.status_label.setText(f"Connected: {self.current_ip}")
+                else:
+                    self.status_label.setText("Connected")
 
             # Display the frame
             self.display_image(frame)
@@ -940,6 +1198,7 @@ def main():
     print(f"                   Streamy v{APP_VERSION}                   ")
     print("       With Integrated Elegoo Printer Monitor     ")
     print("  Created and maintained by data_heavy@proton.me  ")
+    print(" https://github.com/OverjoyedFrankenstein/Streamy")
     print("==================================================")
     print("==================================================")
 

@@ -8,40 +8,41 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-# Check for required packages and install if needed
-def check_and_install_packages():
-    required_packages = ["websocket-client", "Pillow"]
-    for package in required_packages:
-        try:
-            __import__(package.replace("-", "_").split(".")[0])
-        except ImportError:
-            print(f"{package} package not found. Attempting to install...")
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-                print(f"Successfully installed {package}.")
-            except subprocess.CalledProcessError:
-                print(f"Failed to install {package}. Please install it manually:")
-                print(f"pip install {package}")
-                return False
-    return True
+# Configure logging for printmon
+logging.basicConfig(
+    level=logging.ERROR,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("streamy.printmon")
 
-# Check and install required packages
-if not check_and_install_packages():
-    sys.exit(1)
+# Note: Package checking is handled by main.py for Streamy app
 
-# Now import the installed packages
+# Import websocket (required for PrinterMonitor)
 import websocket
-from PIL import Image, ImageTk, ImageDraw
+
+# Conditional imports for GUI (only needed when running stats.py directly)
+# These may fail in PyInstaller builds that exclude tkinter
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext, messagebox
+    from PIL import Image, ImageTk, ImageDraw
+    _HAS_GUI = True
+except ImportError:
+    _HAS_GUI = False
+    tk = None
+    ttk = None
+    scrolledtext = None
+    messagebox = None
+    ImageTk = None
 
 # Import all the classes and functions from goo.py that we need
 # We're copying the relevant classes directly to make the script self-contained
@@ -121,22 +122,29 @@ class PrintInfo:
     total_time: int = 0
     task_id: str = ""
     task_name: str = ""
+    status_code: int = 0  # Raw status code from printer
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PrintInfo':
         """Create instance from dictionary with flexible field mapping."""
         # Handle different possible field names
         is_printing = False
+        status_code = 0
         # Try different variations of IsPrinting field
         for field in ["IsPrinting", "Printing", "isPrinting", "is_printing", "Status"]:
             if field in data:
                 # If field is "Status", check if value is "Running" or similar
-                if field == "Status" and isinstance(data[field], str):
-                    is_printing = data[field].lower() in ["running", "printing", "busy"]
+                if field == "Status":
+                    if isinstance(data[field], str):
+                        is_printing = data[field].lower() in ["running", "printing", "busy"]
+                    elif isinstance(data[field], int):
+                        status_code = data[field]
+                        # Elegoo uses: 0,8=idle, 1=preparing, 2-4=printing, 7=finishing
+                        is_printing = status_code in [1, 2, 3, 4, 7]
                 else:
                     is_printing = bool(data[field])
                 break
-        
+
         # Try different variations of progress field
         progress = 0.0
         for field in ["Progress", "progress", "PrintProgress", "print_progress", "Percent"]:
@@ -146,7 +154,7 @@ class PrintInfo:
                     break
                 except (ValueError, TypeError):
                     pass
-        
+
         # Try different variations of current layer field
         current_layer = 0
         for field in ["CurrentLayer", "Layer", "current_layer", "CurrentLine", "LineNum", "Layers"]:
@@ -156,7 +164,7 @@ class PrintInfo:
                     break
                 except (ValueError, TypeError):
                     pass
-        
+
         # Try different variations of total layer field
         total_layer = 0
         for field in ["TotalLayer", "TotalLayers", "MaxLayer", "Lines", "total_layers", "Slices"]:
@@ -166,10 +174,10 @@ class PrintInfo:
                     break
                 except (ValueError, TypeError):
                     pass
-        
+
         # Try different variations of remaining time field (in seconds)
         remain_time = 0
-        for field in ["RemainTime", "TimeLeft", "remain_time", "RemainingTime", "TimeRemaining", "PrintTimeLeft"]:
+        for field in ["RemainTime", "TimeLeft", "remain_time", "RemainingTime", "TimeRemaining", "PrintTimeLeft", "LeftTime", "remainTime", "leftTime"]:
             if field in data:
                 try:
                     # Check if it's a string in "hh:mm:ss" format
@@ -183,13 +191,14 @@ class PrintInfo:
                             remain_time = minutes * 60 + seconds
                     else:
                         remain_time = int(data[field])
-                    break
+                    if remain_time > 0:
+                        break
                 except (ValueError, TypeError):
                     pass
-        
+
         # Try different variations of total time field (in seconds)
         total_time = 0
-        for field in ["TotalTime", "total_time", "TotalPrintTime", "PrintTime", "PrintDuration"]:
+        for field in ["TotalTime", "total_time", "TotalPrintTime", "PrintTime", "PrintDuration", "EstimatedTime", "totalTime", "printTime"]:
             if field in data:
                 try:
                     # Check if it's a string in "hh:mm:ss" format
@@ -203,24 +212,40 @@ class PrintInfo:
                             total_time = minutes * 60 + seconds
                     else:
                         total_time = int(data[field])
-                    break
+                    if total_time > 0:
+                        break
                 except (ValueError, TypeError):
                     pass
-        
+
+        # Handle Ticks format (milliseconds) - used by Elegoo printers
+        if total_time == 0 and "TotalTicks" in data:
+            try:
+                total_time = int(data["TotalTicks"]) // 1000  # Convert ms to seconds
+            except (ValueError, TypeError):
+                pass
+
+        if remain_time == 0 and "TotalTicks" in data and "CurrentTicks" in data:
+            try:
+                total_ticks = int(data["TotalTicks"])
+                current_ticks = int(data["CurrentTicks"])
+                remain_time = (total_ticks - current_ticks) // 1000  # Convert ms to seconds
+            except (ValueError, TypeError):
+                pass
+
         # Try different variations of task ID field
         task_id = ""
         for field in ["TaskID", "task_id", "JobID", "PrintID"]:
             if field in data:
                 task_id = str(data[field])
                 break
-        
+
         # Try different variations of task name field
         task_name = ""
         for field in ["TaskName", "task_name", "FileName", "JobName", "PrintName"]:
             if field in data:
                 task_name = str(data[field])
                 break
-        
+
         return cls(
             is_printing=is_printing,
             progress=progress,
@@ -229,7 +254,8 @@ class PrintInfo:
             remain_time=remain_time,
             total_time=total_time,
             task_id=task_id,
-            task_name=task_name
+            task_name=task_name,
+            status_code=status_code
         )
 
 
@@ -238,12 +264,17 @@ class PrinterStatus:
     """Status of the printer."""
     temperature: Temperature = None
     print_info: PrintInfo = None
-    
+    status_code: int = 0
+    status_text: str = "Unknown"
+    raw_data: dict = None
+
     def __post_init__(self):
         if self.temperature is None:
             self.temperature = Temperature()
         if self.print_info is None:
             self.print_info = PrintInfo()
+        if self.raw_data is None:
+            self.raw_data = {}
     
     @classmethod
     def from_json(cls, json_str: str) -> 'PrinterStatus':
@@ -317,10 +348,13 @@ class PrinterStatus:
 class PrinterData:
     """Container for all printer data."""
     status: PrinterStatus = None
-    
+    last_updated: str = ""
+
     def __post_init__(self):
         if self.status is None:
             self.status = PrinterStatus()
+        if not self.last_updated:
+            self.last_updated = ""
 
 
 class ElegooPrinterClientWebsocketError(Exception):
@@ -633,6 +667,385 @@ class ElegooPrinterClient:
                            f"Progress={printer_status.print_info.progress}%")
         except Exception as e:
             self.logger.error(f"Error parsing printer status: {e}")
+
+# -----------------------------------------------------------------------------
+# PrinterMonitor Wrapper Class
+# -----------------------------------------------------------------------------
+
+class PrinterMonitor:
+    """Class to monitor Elegoo 3D printer status"""
+
+    def __init__(self):
+        """Initialize the PrinterMonitor with default values"""
+        self.ip_address = None
+        self.is_connected = False
+        self.printer_websocket = None
+        self.printer = Printer()
+        self.printer_data = PrinterData()
+        self.simulated_mode = False
+        logger = logging.getLogger("streamy.printmon")
+        logger.info("PrinterMonitor initialized")
+
+    def set_ip_address(self, ip_address):
+        """Set the IP address for the printer connection"""
+        self.ip_address = ip_address
+        logger = logging.getLogger("streamy.printmon")
+        logger.info(f"Printer IP address set to: {ip_address}")
+
+    async def connect(self):
+        """Connect to the printer monitoring API
+
+        Returns:
+            bool: True if connected successfully, False otherwise
+        """
+        logger = logging.getLogger("streamy.printmon")
+        if not self.ip_address:
+            logger.error("Cannot connect: No IP address provided")
+            return False
+
+        logger.info(f"Connecting to printer at IP: {self.ip_address}")
+
+        # Try to discover printer first
+        try:
+            printer = self.discover_printer()
+            if printer:
+                logger.info(f"Discovered printer: {printer.name} at {printer.ip_address}")
+                self.printer = printer
+            else:
+                # Create basic printer with IP we know
+                self.printer = Printer()
+                self.printer.ip_address = self.ip_address
+                self.printer.id = "ElegooPrinter"
+                self.printer.name = "Elegoo Printer"
+                self.printer.connection = "ElegooPrinterAPI"
+        except Exception as e:
+            logger.error(f"Error during printer discovery: {e}")
+            # Create basic printer even with error
+            self.printer = Printer()
+            self.printer.ip_address = self.ip_address
+            self.printer.id = "ElegooPrinter"
+            self.printer.name = "Elegoo Printer"
+            self.printer.connection = "ElegooPrinterAPI"
+
+        # Connect with WebSocket
+        connected = await self.connect_printer()
+        if connected:
+            # Get initial status
+            try:
+                self.get_status()
+            except Exception as e:
+                logger.error(f"Error getting initial status: {e}")
+
+            return True
+
+        return False
+
+    def discover_printer(self):
+        """Discover the Elegoo printer on the network."""
+        logger = logging.getLogger("streamy.printmon")
+        logger.info(f"Starting printer discovery at {self.ip_address}")
+        msg = b"M99999"
+        try:
+            with socket.socket(
+                socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
+            ) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.settimeout(1)
+                try:
+                    sock.bind(("", 54780))
+                except OSError as e:
+                    logger.warning(f"Could not bind to port 54780: {e}")
+                    sock.settimeout(1)
+
+                try:
+                    # Send the discovery message
+                    logger.debug(f"Sending discovery message to {self.ip_address}:3000")
+                    sock.sendto(msg, (self.ip_address, 3000))
+
+                    # Try to receive a response
+                    logger.debug("Waiting for response...")
+                    data, addr = sock.recvfrom(8192)
+                    logger.debug(f"Received response from {addr}")
+
+                    # Process the response
+                    printer = self._save_discovered_printer(data)
+                    if printer:
+                        logger.debug("Discovery done.")
+                        return printer
+                except TimeoutError:
+                    logger.warning("Printer discovery timed out.")
+                except socket.error as e:
+                    logger.warning(f"Socket error during discovery: {e}")
+
+        except Exception as e:
+            logger.exception(f"Unexpected error during discovery: {e}")
+
+        logger.warning("Could not discover printer details, will attempt direct connection.")
+        return None
+
+    def _save_discovered_printer(self, data):
+        """Parse and save discovered printer information."""
+        logger = logging.getLogger("streamy.printmon")
+        try:
+            printer_info = data.decode("utf-8")
+            logger.debug(f"Raw printer info: {printer_info!r}")
+
+            # Create a new printer instance
+            printer = Printer()
+
+            # Check if we have a valid response format
+            if "|" in printer_info:
+                # Try to parse the standard format
+                parts = printer_info.split("|")
+                if len(parts) >= 3:
+                    printer.id = parts[0]
+                    printer.name = parts[1]
+                    printer.ip_address = parts[2]
+                    if len(parts) >= 4:
+                        printer.model = parts[3]
+                    if len(parts) >= 5:
+                        printer.firmware = parts[4]
+            else:
+                # If we can't parse the standard format, at least set the IP
+                printer.name = "Elegoo Printer"
+                printer.ip_address = self.ip_address
+                printer.id = "ElegooPrinter"
+
+            # Final validation - if we don't have an IP, use the one provided at initialization
+            if not printer.ip_address:
+                printer.ip_address = self.ip_address
+
+            # Set connection type
+            printer.connection = "ElegooPrinterAPI"
+
+            # Log what we found
+            logger.info(f"Discovered: {printer.name} ({printer.ip_address})")
+            return printer
+
+        except UnicodeDecodeError:
+            logger.exception("Error decoding printer discovery data. Data may be malformed.")
+        except Exception as e:
+            logger.exception(f"Error creating Printer object: {e}")
+
+        # If all else fails, create a basic printer with the IP we know
+        fallback_printer = Printer()
+        fallback_printer.name = "Elegoo Printer"
+        fallback_printer.ip_address = self.ip_address
+        fallback_printer.id = "ElegooPrinter"
+        fallback_printer.connection = "ElegooPrinterAPI"
+        logger.warning(f"Using fallback printer configuration with IP: {self.ip_address}")
+        return fallback_printer
+
+    async def connect_printer(self):
+        """Connect to the Elegoo printer"""
+        logger = logging.getLogger("streamy.printmon")
+        url = f"ws://{self.printer.ip_address}:3030/websocket"
+        logger.info(f"Connecting to: {self.printer.name}")
+
+        websocket.setdefaulttimeout(1)
+
+        def ws_msg_handler(ws, msg):
+            self._parse_response(msg)
+
+        def ws_connected_handler(name):
+            logger.info(f"Connected to: {name}")
+
+        def on_close(ws, close_status_code, close_msg):
+            logger.debug(f"Connection to {self.printer.name} closed: {close_msg} ({close_status_code})")
+            self.printer_websocket = None
+
+        def on_error(ws, error):
+            logger.error(f"Connection to {self.printer.name} error: {error}")
+            self.printer_websocket = None
+
+        # Create WebSocket connection
+        ws = websocket.WebSocketApp(
+            url,
+            on_message=ws_msg_handler,
+            on_open=lambda ws: ws_connected_handler(self.printer.name),
+            on_close=on_close,
+            on_error=on_error,
+        )
+        self.printer_websocket = ws
+
+        # Start WebSocket in a thread
+        thread = threading.Thread(target=ws.run_forever, kwargs={"reconnect": 1}, daemon=True)
+        thread.start()
+
+        # Wait for connection to establish
+        start_time = time.time()
+        timeout = 5
+        while time.time() - start_time < timeout:
+            if ws.sock and ws.sock.connected:
+                await asyncio.sleep(1)
+                logger.info(f"Connected to {self.printer.name}")
+                self.is_connected = True
+                return True
+
+            await asyncio.sleep(0.1)
+
+        logger.warning(f"Failed to connect to {self.printer.name} within timeout")
+        self.printer_websocket = None
+        return False
+
+    def _parse_response(self, response):
+        """Parse the printer's WebSocket response"""
+        logger = logging.getLogger("streamy.printmon")
+        try:
+            data = json.loads(response)
+            topic = data.get("Topic")
+
+            if topic:
+                topic_type = topic.split("/")[1] if len(topic.split("/")) > 1 else ""
+                if topic_type == "response":
+                    self._response_handler(data)
+                elif topic_type == "status":
+                    self._status_handler(data)
+                elif topic_type == "notice":
+                    logger.debug(f"notice >> {json.dumps(data)[:100]}...")
+                elif topic_type == "error":
+                    logger.debug(f"error >> {json.dumps(data)[:100]}...")
+                else:
+                    logger.debug("Unknown message type")
+            else:
+                # Even without a topic, the data might contain useful information
+                if "Data" in data or "StatusData" in data or "PrintInfo" in data:
+                    logger.debug("Message without Topic but contains data, attempting to parse")
+                    self._status_handler(data)
+                else:
+                    logger.debug("Message without Topic or useful data")
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON received: {response[:100]}...")
+        except Exception as e:
+            logger.error(f"Error parsing response: {e}")
+
+    def _response_handler(self, data):
+        """Handle response messages."""
+        logger = logging.getLogger("streamy.printmon")
+        logger.debug(f"Response received: {json.dumps(data)[:200]}...")
+
+    def _status_handler(self, data):
+        """Handle status messages from the printer."""
+        logger = logging.getLogger("streamy.printmon")
+        try:
+            logger.debug(f"Status received: {json.dumps(data)[:200]}...")
+            # Parse the status using PrinterStatus
+            printer_status = PrinterStatus.from_json(json.dumps(data))
+
+            # Update printer data
+            self.printer_data.status = printer_status
+            self.printer_data.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Log status details
+            print_info = printer_status.print_info
+            logger.info(f"Updated status: Printing={print_info.is_printing}, " +
+                       f"Progress={print_info.progress:.1f}%, " +
+                       f"Layer={print_info.current_layer}/{print_info.total_layer}")
+        except Exception as e:
+            logger.error(f"Error handling status message: {e}")
+
+    def disconnect(self):
+        """Disconnect from the printer"""
+        logger = logging.getLogger("streamy.printmon")
+        try:
+            if self.printer_websocket:
+                self.printer_websocket.close()
+                self.printer_websocket = None
+
+            self.is_connected = False
+            self.simulated_mode = False
+            logger.info("Disconnected from printer")
+
+        except Exception as e:
+            logger.error(f"Error disconnecting: {e}")
+
+    def get_status(self):
+        """Get the current printer status"""
+        logger = logging.getLogger("streamy.printmon")
+        if not self.is_connected:
+            logger.warning("Cannot get status: Not connected to printer")
+            return None
+
+        try:
+            # Send status command and alternate commands
+            self._send_printer_cmd(0)
+
+            # On Elegoo printers, we may need additional commands to get complete data
+            try:
+                # Command for detailed printer status
+                self._send_printer_cmd(100)
+            except:
+                pass
+
+            try:
+                # Command for print info
+                self._send_printer_cmd(200)
+            except:
+                pass
+
+            try:
+                # Command for temperature data
+                self._send_printer_cmd(300)
+            except:
+                pass
+
+            # Add short delay to allow responses to be processed
+            time.sleep(0.2)
+
+        except Exception as e:
+            logger.error(f"Error sending printer commands: {e}")
+
+        # Update timestamp if we have data
+        if self.printer_data:
+            self.printer_data.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        return self.printer_data
+
+    def _send_printer_cmd(self, cmd, data=None):
+        """Send a command to the printer"""
+        logger = logging.getLogger("streamy.printmon")
+        ts = int(time.time())
+        data = data or {}
+        payload = {
+            "Id": self.printer.connection,
+            "Data": {
+                "Cmd": cmd,
+                "Data": data,
+                "RequestID": os.urandom(8).hex(),
+                "MainboardID": self.printer.id,
+                "TimeStamp": ts,
+                "From": 0,
+            },
+            "Topic": f"sdcp/request/{self.printer.id}",
+        }
+
+        logger.debug(f"Sending command {cmd} to printer")
+
+        if self.printer_websocket and hasattr(self.printer_websocket, 'sock') and self.printer_websocket.sock and self.printer_websocket.sock.connected:
+            try:
+                self.printer_websocket.send(json.dumps(payload))
+            except Exception as e:
+                logger.error(f"Error sending command: {e}")
+                raise ElegooPrinterClientWebsocketError(f"WebSocket error: {e}")
+        else:
+            logger.warning("Attempted to send command but websocket is not connected")
+            raise ElegooPrinterClientWebsocketConnectionError("WebSocket not connected")
+
+    @staticmethod
+    def format_time(seconds):
+        """Format time in seconds to a readable string
+
+        Args:
+            seconds (int): Time in seconds
+
+        Returns:
+            str: Formatted time string (HH:MM:SS)
+        """
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 # -----------------------------------------------------------------------------
 # Log Management Class
@@ -1126,43 +1539,42 @@ class ElegooMonitorGUI:
 # -----------------------------------------------------------------------------
 
 def main():
+    if not _HAS_GUI:
+        print("Error: tkinter not available. Cannot run GUI.")
+        return
+
     # Create the main window
     root = tk.Tk()
-    
+
     try:
         # Try to set the app icon
-        # This is optional and depends on platform
         try:
-            # Create a simple icon using PIL
-            import socket
             from PIL import Image, ImageDraw
-            
             # Create a 64x64 image with a printer icon
             icon = Image.new('RGBA', (64, 64), (255, 255, 255, 0))
             draw = ImageDraw.Draw(icon)
-            
+
             # Draw a simple printer shape
             draw.rectangle([10, 20, 54, 44], fill=(30, 144, 255))  # Printer body
             draw.rectangle([20, 44, 44, 50], fill=(30, 144, 255))  # Printer base
             draw.rectangle([16, 10, 48, 20], fill=(30, 144, 255))  # Paper tray
             draw.ellipse([40, 26, 48, 34], fill=(255, 0, 0))       # Power button
-            
+
             # Set the window icon
             root.iconphoto(True, ImageTk.PhotoImage(icon))
         except:
             # If setting the icon fails, just continue
             pass
-        
+
         # Create and run the application
         app = ElegooMonitorGUI(root)
         root.mainloop()
-        
+
     except Exception as e:
         print(f"Error initializing application: {e}")
         import traceback
         traceback.print_exc()
         messagebox.showerror("Error", f"Application error: {str(e)}")
-        
+
 if __name__ == "__main__":
-    import socket  # Added for printer discovery
     main()
