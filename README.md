@@ -11,7 +11,9 @@ A desktop application for streaming RTSP video from 3D printer cameras and monit
 ---
 
 tl;dr: Python based RTSP video streaming app, with the conversion to a macOS app.
+
 To run: python main.py
+
 To convert: python build_app.py, wait for it to complete, then run Streamy.app
 
 ---
