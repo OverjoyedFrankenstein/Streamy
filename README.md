@@ -5,7 +5,6 @@
 A desktop application for streaming RTSP video from 3D printer cameras and monitoring printer status in real-time.
 
 **Contact:** data_heavy@proton.me
-
 **GitHub:** https://github.com/OverjoyedFrankenstein/Streamy
 
 ---
